@@ -33,23 +33,28 @@ app.get("/", (req, res) => {
   res.send("Backend is running ✅");
 });
 
-// ===== NEW: RHYMEZONE ROUTE =====
+// ===== FIXED: RHYMEZONE ROUTE =====
 app.get("/rhyme", async (req, res) => {
   const word = req.query.word;
   if (!word) return res.status(400).json({ error: "word query is required. Example: /rhyme?word=love" });
 
   try {
-    const response = await axios.get('https://rhymezone-com.p.rapidapi.com/words', {
-      params: { word: word, max: 20 },
+    const options = {
+      method: 'GET',
+      url: 'https://rhymes.p.rapidapi.com/rhymes',
+      params: { word: word },
       headers: {
         'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-        'X-RapidAPI-Host': 'rhymezone-com.p.rapidapi.com'
+        'X-RapidAPI-Host': 'rhymes.p.rapidapi.com'
       }
-    });
-    res.json(response.data);
+    };
+
+    const response = await axios.request(options);
+    res.json({ word: word, rhymes: response.data }); // cleaner response
+    
   } catch (error) {
-    console.error("Rhyme error:", error.message);
-    res.status(500).json({ error: "Failed to fetch rhymes" });
+    console.error("Rhyme error:", error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data?.message || error.message });
   }
 });
 // ===== END RHYMEZONE ROUTE =====
@@ -73,8 +78,8 @@ app.post("/deposit", async (req, res) => {
       body: JSON.stringify({
         email,
         amount: amount * 100, // Convert to kobo
-        metadata: { userId, amount }, // <-- ADDED AMOUNT TOO
-        callback_url: `https://rhymezone-backend.onrender.com/payment-callback` // <-- CHANGED TO LIVE URL
+        metadata: { userId, amount }, 
+        callback_url: `https://rhymezone-backend.onrender.com/payment-callback`
       })
     });
     
@@ -104,17 +109,16 @@ app.get("/payment-callback", async (req, res) => {
       
       const user = await User.findById(userId);
       user.balance += amountPaid;
-      // SAVE TRANSACTION
       user.transactions.push({ type: "Deposit", amount: amountPaid });
       await user.save();
 
-      return res.redirect(`https://rhymezone-backend.onrender.com/verify.html?status=success&reference=${reference}`); // <-- CHANGED TO LIVE URL
+      return res.redirect(`https://rhymezone-backend.onrender.com/verify.html?status=success&reference=${reference}`);
     } else {
-      return res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed"); // <-- CHANGED TO LIVE URL
+      return res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed");
     }
   } catch (err) {
     console.error("Verify error:", err.message);
-    res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed"); // <-- CHANGED TO LIVE URL
+    res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed");
   }
 });
 
@@ -145,9 +149,7 @@ app.post('/api/withdraw', async (req, res) => {
       return res.status(400).json({ message: 'Insufficient balance' });
     }
 
-    // Deduct from balance
     user.balance -= amount;
-    // SAVE TRANSACTION
     user.transactions.push({ type: "Withdraw", amount: amount });
     await user.save();
 
@@ -173,9 +175,9 @@ app.get('/api/transactions/:userId', async (req, res) => {
 });
 
 
-const PORT = process.env.PORT || 10000; // <-- CHANGED TO 10000 FOR RENDER
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
   console.log(`Paystack key loaded: ${process.env.PAYSTACK_SECRET_KEY ? "YES" : "NO"}`);
-  console.log(`RapidAPI key loaded: ${process.env.RAPIDAPI_KEY ? "YES" : "NO"}`); // <-- ADDED
+  console.log(`RapidAPI key loaded: ${process.env.RAPIDAPI_KEY ? "YES" : "NO"}`);
 });
