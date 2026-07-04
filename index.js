@@ -2,7 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
-import axios from "axios"; // <-- STILL NEEDED FOR DATAMUSE
+import axios from "axios";
 
 dotenv.config();
 const app = express();
@@ -14,11 +14,11 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB Connected ✅"))
   .catch((err) => console.error(err));
 
-// User Schema - ADDED TRANSACTIONS
+// User Schema - WITH TRANSACTIONS
 const userSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   balance: { type: Number, default: 0 },
-  transactions: [ // NEW: This will store history
+  transactions: [
     {
       type: { type: String }, // "Deposit" or "Withdraw"
       amount: { type: Number },
@@ -33,17 +33,20 @@ app.get("/", (req, res) => {
   res.send("Backend is running ✅");
 });
 
-// ===== FREE RHYME ROUTE - NO API KEY NEEDED =====
+// ===== CLEAN RHYME ROUTE - ONLY REAL WORDS, NO "OF" PHRASES =====
 app.get("/rhyme", async (req, res) => {
   const word = req.query.word;
   if (!word) return res.status(400).json({ error: "word query is required. Example: /rhyme?word=love" });
 
   try {
     // Datamuse free API - no key needed
-    const response = await axios.get(`https://api.datamuse.com/words?rel_rhy=${word}&max=20`);
+    const response = await axios.get(`https://api.datamuse.com/words?rel_rhy=${word}&max=50`);
     
-    // Datamuse returns [{word: "dove", score: 100}, ...] so we extract just the words
-    const rhymes = response.data.map(item => item.word);
+    // Filter: only keep single words, no spaces, no "of" phrases
+    const rhymes = response.data
+     .map(item => item.word)
+     .filter(w =>!w.includes(" ") && w.length > 1) // remove phrases like "think of"
+     .slice(0, 20); // only return top 20 clean rhymes
     
     res.json({ word: word, rhymes: rhymes });
     
@@ -53,6 +56,18 @@ app.get("/rhyme", async (req, res) => {
   }
 });
 // ===== END RHYME ROUTE =====
+
+// ===== RANDOM WORD ROUTE =====
+app.get("/random", async (req, res) => {
+  try {
+    const response = await axios.get(`https://api.datamuse.com/words?topics=common&max=1`);
+    res.json({ word: response.data[0].word });
+  } catch (error) {
+    console.error("Random word error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+// ===== END RANDOM ROUTE =====
 
 
 // 1. Create Paystack payment
@@ -128,7 +143,7 @@ app.get('/api/user/:id', async (req, res) => {
   }
 });
 
-// 4. WITHDRAW ROUTE - NOW SAVES TRANSACTION TOO
+// 4. WITHDRAW ROUTE - SAVES TRANSACTION TOO
 app.post('/api/withdraw', async (req, res) => {
   try {
     const { userId, amount } = req.body;
