@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Rhymezone Test</title>
+</head>
+<body>
+  <h1>Frontend Connected</h1>
+  <button id="testBtn">Test Backend</button>
+  <p id="result"></p>
+
+  <script>
+    document.getElementById('testBtn').onclick = async () => {
+      const res = await fetch('http://localhost:5000');
+      const text = await res.text();
+      document.getElementById('result').innerText = text;
+    };
+  </script>
+</body>
+</html>
