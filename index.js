@@ -1,193 +1,106 @@
-import express from "express";
-import mongoose from "mongoose";
-import cors from "cors";
-import dotenv from "dotenv";
-import axios from "axios";
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const { open } = require('sqlite');
+const cors = require('cors');
+const axios = require('axios');
+const bcrypt = require('bcrypt');
+const { v4: uuidv4 } = require('uuid');
+require('dotenv').config();
 
-dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB Connected ✅"))
-  .catch((err) => console.error(err));
+const PORT = process.env.PORT || 3000;
+const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 
-// User Schema - WITH TRANSACTIONS
-const userSchema = new mongoose.Schema({
-  email: { type: String, unique: true },
-  balance: { type: Number, default: 0 },
-  transactions: [
-    {
-      type: { type: String }, // "Deposit" or "Withdraw"
-      amount: { type: Number },
-      date: { type: Date, default: Date.now }
-    }
-  ]
-});
-const User = mongoose.model("User", userSchema);
+// Database setup
+let db;
+(async () => {
+  db = await open({
+    filename: './database.db',
+    driver: sqlite3.Database
+  });
+  
+  // Users table
+  await db.exec(`CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE,
+    password TEXT,
+    balance REAL DEFAULT 0
+  )`);
+  
+  // Transactions table
+  await db.exec(`CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT,
+    type TEXT,
+    amount REAL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+})();
 
-// Test route
-app.get("/", (req, res) => {
-  res.send("Backend is running ✅");
-});
-
-// ===== CLEAN RHYME ROUTE - ONLY REAL WORDS, NO "OF" PHRASES =====
-app.get("/rhyme", async (req, res) => {
+// RHYME ROUTES
+app.get('/rhyme', async (req, res) => {
   const word = req.query.word;
-  if (!word) return res.status(400).json({ error: "word query is required. Example: /rhyme?word=love" });
-
-  try {
-    // Datamuse free API - no key needed
-    const response = await axios.get(`https://api.datamuse.com/words?rel_rhy=${word}&max=50`);
-    
-    // Filter: only keep single words, no spaces, no "of" phrases
-    const rhymes = response.data
-     .map(item => item.word)
-     .filter(w =>!w.includes(" ") && w.length > 1) // remove phrases like "think of"
-     .slice(0, 20); // only return top 20 clean rhymes
-    
-    res.json({ word: word, rhymes: rhymes });
-    
-  } catch (error) {
-    console.error("Rhyme error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// ===== END RHYME ROUTE =====
-
-// ===== RANDOM WORD ROUTE =====
-app.get("/random", async (req, res) => {
-  try {
-    const response = await axios.get(`https://api.datamuse.com/words?topics=common&max=1`);
-    res.json({ word: response.data[0].word });
-  } catch (error) {
-    console.error("Random word error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-// ===== END RANDOM ROUTE =====
-
-
-// 1. Create Paystack payment
-app.post("/deposit", async (req, res) => {
-  const { email, amount, userId } = req.body;
-  
-  try {
-    if (!email || !amount || !userId) {
-      return res.status(400).json({ status: false, message: "Email, amount, and userId are required" });
-    }
-
-    const response = await fetch("https://api.paystack.co/transaction/initialize", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        email,
-        amount: amount * 100, // Convert to kobo
-        metadata: { userId, amount }, 
-        callback_url: `https://rhymezone-backend.onrender.com/payment-callback`
-      })
-    });
-    
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error("Deposit error:", err);
-    res.status(500).json({ status: false, message: "Payment initialization failed" });
-  }
+  const response = await axios.get(`https://api.datamuse.com/words?rel_rhy=${word}`);
+  res.json({ word, rhymes: response.data.map(w => w.word) });
 });
 
-// 2. Paystack callback - Backend verifies FIRST + SAVES TRANSACTION
-app.get("/payment-callback", async (req, res) => {
-  const { reference } = req.query;
-  
-  try {
-    const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
-      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` }
-    });
-    
-    const data = await response.json();
-    console.log("Verify result:", data.data.status, "Ref:", reference);
-    
-    if (data.status && data.data.status === "success") {
-      const amountPaid = data.data.amount / 100;
-      const userId = data.data.metadata.userId; 
-      
-      const user = await User.findById(userId);
-      user.balance += amountPaid;
-      user.transactions.push({ type: "Deposit", amount: amountPaid });
-      await user.save();
-
-      return res.redirect(`https://rhymezone-backend.onrender.com/verify.html?status=success&reference=${reference}`);
-    } else {
-      return res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed");
-    }
-  } catch (err) {
-    console.error("Verify error:", err.message);
-    res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed");
-  }
+app.get('/random', async (req, res) => {
+  const words = ['love', 'time', 'money', 'dream', 'music', 'life'];
+  const word = words[Math.floor(Math.random() * words.length)];
+  res.json({ word });
 });
 
-// 3. GET USER BALANCE ROUTE
-app.get('/api/user/:id', async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    res.json({ balance: user.balance, email: user.email });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+// AUTH ROUTES
+app.post('/api/register', async (req, res) => {
+  const { email, password } = req.body;
+  const existing = await db.get('SELECT * FROM users WHERE email = ?', [email]);
+  if(existing) return res.json({ error: 'Email already exists' });
+
+  const hashed = await bcrypt.hash(password, 10);
+  const userId = uuidv4();
+  await db.run('INSERT INTO users (id, email, password) VALUES (?,?,?)', [userId, email, hashed]);
+  res.json({ userId, message: 'Registered successfully' });
 });
 
-// 4. WITHDRAW ROUTE - SAVES TRANSACTION TOO
-app.post('/api/withdraw', async (req, res) => {
-  try {
-    const { userId, amount } = req.body;
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await db.get('SELECT * FROM users WHERE email = ?', [email]);
+  if(!user) return res.json({ error: 'User not found' });
 
-    if (!userId || !amount) {
-      return res.status(400).json({ message: 'userId and amount required' });
-    }
+  const valid = await bcrypt.compare(password, user.password);
+  if(!valid) return res.json({ error: 'Wrong password' });
 
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
-    if (user.balance < amount) {
-      return res.status(400).json({ message: 'Insufficient balance' });
-    }
-
-    user.balance -= amount;
-    user.transactions.push({ type: "Withdraw", amount: amount });
-    await user.save();
-
-    res.json({ 
-      message: `Withdrawal of ₦${amount} successful`, 
-      newBalance: user.balance 
-    });
-
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+  res.json({ userId: user.id, message: 'Login successful' });
 });
 
-// 5. GET ALL TRANSACTIONS ROUTE
+// MONEY ROUTES
+app.get('/api/user/:userId', async (req, res) => {
+  const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.userId]);
+  res.json(user);
+});
+
 app.get('/api/transactions/:userId', async (req, res) => {
-  try {
-    const user = await User.findById(req.params.userId);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    res.json(user.transactions.reverse()); // newest first
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+  const txs = await db.all('SELECT * FROM transactions WHERE userId = ? ORDER BY createdAt DESC', [req.params.userId]);
+  res.json(txs);
 });
 
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-  console.log(`Paystack key loaded: ${process.env.PAYSTACK_SECRET_KEY ? "YES" : "NO"}`);
-  console.log(`RapidAPI key loaded: ${process.env.RAPIDAPI_KEY ? "YES" : "NO"}`);
+app.post('/deposit', async (req, res) => {
+  const { email, amount, userId } = req.body;
+  const response = await axios.post('https://api.paystack.co/transaction/initialize',
+    { email, amount: amount * 100, metadata: { userId } },
+    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
+  );
+  res.json(response.data);
 });
+
+app.post('/api/withdraw', async (req, res) => {
+  const { userId, amount } = req.body;
+  await db.run('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, userId]);
+  await db.run('INSERT INTO transactions (userId, type, amount) VALUES (?,?,?)', [userId, 'Withdraw', amount]);
+  res.json({ message: 'Withdrawal successful' });
+});
+
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
