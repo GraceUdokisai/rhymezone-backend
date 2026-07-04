@@ -1,6 +1,5 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const { open } = require('sqlite');
+const mongoose = require('mongoose');
 const cors = require('cors');
 const axios = require('axios');
 const bcrypt = require('bcrypt');
@@ -13,32 +12,30 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
+const MONGODB_URI = process.env.MONGODB_URI;
 
-// Database setup
-let db;
-(async () => {
-  db = await open({
-    filename: './database.db',
-    driver: sqlite3.Database
-  });
-  
-  // Users table
-  await db.exec(`CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT UNIQUE,
-    password TEXT,
-    balance REAL DEFAULT 0
-  )`);
-  
-  // Transactions table
-  await db.exec(`CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    userId TEXT,
-    type TEXT,
-    amount REAL,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-})();
+// MongoDB Connection
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('MongoDB Connected'))
+  .catch(err => console.log(err));
+
+// MongoDB Schemas
+const UserSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  balance: { type: Number, default: 0 }
+});
+
+const TransactionSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  type: { type: String, required: true },
+  amount: { type: Number, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', UserSchema);
+const Transaction = mongoose.model('Transaction', TransactionSchema);
 
 // RHYME ROUTES
 app.get('/rhyme', async (req, res) => {
@@ -56,18 +53,19 @@ app.get('/random', async (req, res) => {
 // AUTH ROUTES
 app.post('/api/register', async (req, res) => {
   const { email, password } = req.body;
-  const existing = await db.get('SELECT * FROM users WHERE email = ?', [email]);
+  const existing = await User.findOne({ email });
   if(existing) return res.json({ error: 'Email already exists' });
 
   const hashed = await bcrypt.hash(password, 10);
   const userId = uuidv4();
-  await db.run('INSERT INTO users (id, email, password) VALUES (?,?,?)', [userId, email, hashed]);
+  const newUser = new User({ id: userId, email, password: hashed });
+  await newUser.save();
   res.json({ userId, message: 'Registered successfully' });
 });
 
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = await db.get('SELECT * FROM users WHERE email = ?', [email]);
+  const user = await User.findOne({ email });
   if(!user) return res.json({ error: 'User not found' });
 
   const valid = await bcrypt.compare(password, user.password);
@@ -78,12 +76,12 @@ app.post('/api/login', async (req, res) => {
 
 // MONEY ROUTES
 app.get('/api/user/:userId', async (req, res) => {
-  const user = await db.get('SELECT * FROM users WHERE id = ?', [req.params.userId]);
+  const user = await User.findOne({ id: req.params.userId });
   res.json(user);
 });
 
 app.get('/api/transactions/:userId', async (req, res) => {
-  const txs = await db.all('SELECT * FROM transactions WHERE userId = ? ORDER BY createdAt DESC', [req.params.userId]);
+  const txs = await Transaction.find({ userId: req.params.userId }).sort({ createdAt: -1 });
   res.json(txs);
 });
 
@@ -91,15 +89,16 @@ app.post('/deposit', async (req, res) => {
   const { email, amount, userId } = req.body;
   const response = await axios.post('https://api.paystack.co/transaction/initialize',
     { email, amount: amount * 100, metadata: { userId } },
-    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } // <-- FIXED: removed extra )
+    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
   );
   res.json(response.data);
 });
 
 app.post('/api/withdraw', async (req, res) => {
   const { userId, amount } = req.body;
-  await db.run('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, userId]);
-  await db.run('INSERT INTO transactions (userId, type, amount) VALUES (?,?,?)', [userId, 'Withdraw', amount]);
+  await User.updateOne({ id: userId }, { $inc: { balance: -amount } });
+  const tx = new Transaction({ userId, type: 'Withdraw', amount });
+  await tx.save();
   res.json({ message: 'Withdrawal successful' });
 });
 
