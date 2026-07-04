@@ -2,6 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
+import axios from "axios"; // <-- ADDED FOR RAPIDAPI
 
 dotenv.config();
 const app = express();
@@ -32,6 +33,28 @@ app.get("/", (req, res) => {
   res.send("Backend is running ✅");
 });
 
+// ===== NEW: RHYMEZONE ROUTE =====
+app.get("/rhyme", async (req, res) => {
+  const word = req.query.word;
+  if (!word) return res.status(400).json({ error: "word query is required. Example: /rhyme?word=love" });
+
+  try {
+    const response = await axios.get('https://rhymezone-com.p.rapidapi.com/words', {
+      params: { word: word, max: 20 },
+      headers: {
+        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+        'X-RapidAPI-Host': 'rhymezone-com.p.rapidapi.com'
+      }
+    });
+    res.json(response.data);
+  } catch (error) {
+    console.error("Rhyme error:", error.message);
+    res.status(500).json({ error: "Failed to fetch rhymes" });
+  }
+});
+// ===== END RHYMEZONE ROUTE =====
+
+
 // 1. Create Paystack payment
 app.post("/deposit", async (req, res) => {
   const { email, amount, userId } = req.body;
@@ -51,7 +74,7 @@ app.post("/deposit", async (req, res) => {
         email,
         amount: amount * 100, // Convert to kobo
         metadata: { userId, amount }, // <-- ADDED AMOUNT TOO
-        callback_url: `http://localhost:5000/payment-callback`
+        callback_url: `https://rhymezone-backend.onrender.com/payment-callback` // <-- CHANGED TO LIVE URL
       })
     });
     
@@ -85,13 +108,13 @@ app.get("/payment-callback", async (req, res) => {
       user.transactions.push({ type: "Deposit", amount: amountPaid });
       await user.save();
 
-      return res.redirect(`http://localhost:5500/verify.html?status=success&reference=${reference}`);
+      return res.redirect(`https://rhymezone-backend.onrender.com/verify.html?status=success&reference=${reference}`); // <-- CHANGED TO LIVE URL
     } else {
-      return res.redirect("http://localhost:5500/verify.html?status=failed");
+      return res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed"); // <-- CHANGED TO LIVE URL
     }
   } catch (err) {
     console.error("Verify error:", err.message);
-    res.redirect("http://localhost:5500/verify.html?status=failed");
+    res.redirect("https://rhymezone-backend.onrender.com/verify.html?status=failed"); // <-- CHANGED TO LIVE URL
   }
 });
 
@@ -150,8 +173,9 @@ app.get('/api/transactions/:userId', async (req, res) => {
 });
 
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000; // <-- CHANGED TO 10000 FOR RENDER
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
   console.log(`Paystack key loaded: ${process.env.PAYSTACK_SECRET_KEY ? "YES" : "NO"}`);
+  console.log(`RapidAPI key loaded: ${process.env.RAPIDAPI_KEY ? "YES" : "NO"}`); // <-- ADDED
 });
