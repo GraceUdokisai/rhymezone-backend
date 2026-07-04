@@ -89,7 +89,7 @@ app.post('/deposit', async (req, res) => {
   const { email, amount, userId } = req.body;
   const response = await axios.post('https://api.paystack.co/transaction/initialize',
     { email, amount: amount * 100, metadata: { userId } },
-    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
+    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } } // <-- FIXED HERE
   );
   res.json(response.data);
 });
