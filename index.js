@@ -2,7 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
-import axios from "axios"; // <-- ADDED FOR RAPIDAPI
+import axios from "axios"; // <-- STILL NEEDED FOR DATAMUSE
 
 dotenv.config();
 const app = express();
@@ -33,31 +33,26 @@ app.get("/", (req, res) => {
   res.send("Backend is running ✅");
 });
 
-// ===== FIXED: RHYMEZONE ROUTE =====
+// ===== FREE RHYME ROUTE - NO API KEY NEEDED =====
 app.get("/rhyme", async (req, res) => {
   const word = req.query.word;
   if (!word) return res.status(400).json({ error: "word query is required. Example: /rhyme?word=love" });
 
   try {
-    const options = {
-      method: 'GET',
-      url: 'https://rhymes.p.rapidapi.com/rhymes',
-      params: { word: word },
-      headers: {
-        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-        'X-RapidAPI-Host': 'rhymes.p.rapidapi.com'
-      }
-    };
-
-    const response = await axios.request(options);
-    res.json({ word: word, rhymes: response.data }); // cleaner response
+    // Datamuse free API - no key needed
+    const response = await axios.get(`https://api.datamuse.com/words?rel_rhy=${word}&max=20`);
+    
+    // Datamuse returns [{word: "dove", score: 100}, ...] so we extract just the words
+    const rhymes = response.data.map(item => item.word);
+    
+    res.json({ word: word, rhymes: rhymes });
     
   } catch (error) {
-    console.error("Rhyme error:", error.response?.data || error.message);
-    res.status(500).json({ error: error.response?.data?.message || error.message });
+    console.error("Rhyme error:", error.message);
+    res.status(500).json({ error: error.message });
   }
 });
-// ===== END RHYMEZONE ROUTE =====
+// ===== END RHYME ROUTE =====
 
 
 // 1. Create Paystack payment
@@ -163,7 +158,7 @@ app.post('/api/withdraw', async (req, res) => {
   }
 });
 
-// 5. NEW: GET ALL TRANSACTIONS ROUTE
+// 5. GET ALL TRANSACTIONS ROUTE
 app.get('/api/transactions/:userId', async (req, res) => {
   try {
     const user = await User.findById(req.params.userId);
