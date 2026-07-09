@@ -37,6 +37,11 @@ const TransactionSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 const Transaction = mongoose.model('Transaction', TransactionSchema);
 
+// TEST ROUTE
+app.get('/', (req, res) => {
+  res.json({ message: "My Game Backend is Live!" });
+});
+
 // RHYME ROUTES
 app.get('/rhyme', async (req, res) => {
   const word = req.query.word;
@@ -89,7 +94,7 @@ app.post('/deposit', async (req, res) => {
   const { email, amount, userId } = req.body;
   const response = await axios.post('https://api.paystack.co/transaction/initialize',
     { email, amount: amount * 100, metadata: { userId } },
-    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } } // <-- FIXED HERE
+    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
   );
   res.json(response.data);
 });
@@ -102,4 +107,23 @@ app.post('/api/withdraw', async (req, res) => {
   res.json({ message: 'Withdrawal successful' });
 });
 
+// THIS IS THE ONE THAT WAS MISSING - ADDED IT
+app.post('/create-recipient', async (req, res) => {
+  const { name } = req.body;
+  console.log("Received name:", name);
+  
+  if (!name) {
+    return res.status(400).json({ success: false, message: "Name is required" });
+  }
+  
+  // You can later add Paystack recipient creation here
+  res.json({ 
+    success: true, 
+    message: "Recipient created!", 
+    name: name 
+  });
+});
+
+
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
