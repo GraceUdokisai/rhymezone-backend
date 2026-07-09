@@ -57,32 +57,41 @@ app.get('/random', async (req, res) => {
 
 // AUTH ROUTES
 app.post('/api/register', async (req, res) => {
-  const { email, password } = req.body;
-  const existing = await User.findOne({ email });
-  if(existing) return res.json({ error: 'Email already exists' });
+  try {
+    const { email, password } = req.body;
+    const existing = await User.findOne({ email });
+    if(existing) return res.status(400).json({ error: 'Email already exists' });
 
-  const hashed = await bcrypt.hash(password, 10);
-  const userId = uuidv4();
-  const newUser = new User({ id: userId, email, password: hashed });
-  await newUser.save();
-  res.json({ userId, message: 'Registered successfully' });
+    const hashed = await bcrypt.hash(password, 10);
+    const userId = uuidv4();
+    const newUser = new User({ id: userId, email, password: hashed });
+    await newUser.save();
+    res.json({ userId, message: 'Registered successfully' });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-  const user = await User.findOne({ email });
-  if(!user) return res.json({ error: 'User not found' });
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if(!user) return res.status(400).json({ error: 'User not found' });
 
-  const valid = await bcrypt.compare(password, user.password);
-  if(!valid) return res.json({ error: 'Wrong password' });
+    const valid = await bcrypt.compare(password, user.password);
+    if(!valid) return res.status(400).json({ error: 'Wrong password' });
 
-  res.json({ userId: user.id, message: 'Login successful' });
+    res.json({ userId: user.id, message: 'Login successful' });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // MONEY ROUTES
 app.get('/api/user/:userId', async (req, res) => {
   const user = await User.findOne({ id: req.params.userId });
-  res.json(user);
+  if(!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ balance: user.balance }); // FIXED: only send balance
 });
 
 app.get('/api/transactions/:userId', async (req, res) => {
@@ -91,12 +100,26 @@ app.get('/api/transactions/:userId', async (req, res) => {
 });
 
 app.post('/deposit', async (req, res) => {
-  const { email, amount, userId } = req.body;
-  const response = await axios.post('https://api.paystack.co/transaction/initialize',
-    { email, amount: amount * 100, metadata: { userId } },
-    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } } // <-- FIXED: added extra }
-  );
-  res.json(response.data);
+  try {
+    const { email, amount, userId } = req.body;
+    
+    // 1. Initialize Paystack
+    const response = await axios.post('https://api.paystack.co/transaction/initialize',
+      { email, amount: amount * 100, metadata: { userId } },
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+    );
+    
+    // 2. Save pending transaction
+    const tx = new Transaction({ userId, type: 'Deposit', amount });
+    await tx.save();
+    
+    // 3. Update balance
+    await User.updateOne({ id: userId }, { $inc: { balance: amount } });
+    
+    res.json(response.data);
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/withdraw', async (req, res) => {
