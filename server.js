@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const axios = require('axios');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -13,11 +14,12 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
+const JWT_SECRET = 'rhymezone_secret_key'; // you can change this
 
 // MongoDB Connection
 mongoose.connect(MONGODB_URI)
-  .then(() => console.log('MongoDB Connected'))
-  .catch(err => console.log(err));
+ .then(() => console.log('MongoDB Connected'))
+ .catch(err => console.log(err));
 
 // MongoDB Schemas
 const UserSchema = new mongoose.Schema({
@@ -36,6 +38,18 @@ const TransactionSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', UserSchema);
 const Transaction = mongoose.model('Transaction', TransactionSchema);
+
+// middleware to check token
+function authenticateToken(req, res, next) {
+  const token = req.headers['authorization']?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token' });
+  
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token' });
+    req.user = user;
+    next();
+  });
+}
 
 // TEST ROUTE
 app.get('/', (req, res) => {
@@ -81,7 +95,8 @@ app.post('/api/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if(!valid) return res.status(400).json({ error: 'Wrong password' });
 
-    res.json({ userId: user.id, message: 'Login successful' });
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET);
+    res.json({ token, userId: user.id, message: 'Login successful' });
   } catch(err) {
     res.status(500).json({ error: err.message });
   }
@@ -91,7 +106,7 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/user/:userId', async (req, res) => {
   const user = await User.findOne({ id: req.params.userId });
   if(!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ balance: user.balance }); // FIXED: only send balance
+  res.json({ balance: user.balance });
 });
 
 app.get('/api/transactions/:userId', async (req, res) => {
@@ -99,33 +114,27 @@ app.get('/api/transactions/:userId', async (req, res) => {
   res.json(txs);
 });
 
-app.post('/deposit', async (req, res) => {
+app.post('/api/deposit', authenticateToken, async (req, res) => {
   try {
-    const { email, amount, userId } = req.body;
+    const { amount } = req.body;
+    const userId = req.user.id;
     
-    // 1. Initialize Paystack
-    const response = await axios.post('https://api.paystack.co/transaction/initialize',
-      { email, amount: amount * 100, metadata: { userId } },
-      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
-    );
-    
-    // 2. Save pending transaction
-    const tx = new Transaction({ userId, type: 'Deposit', amount });
+    await User.updateOne({ id: userId }, { $inc: { balance: Number(amount) } });
+    const tx = new Transaction({ userId, type: 'Deposit', amount: Number(amount) });
     await tx.save();
     
-    // 3. Update balance
-    await User.updateOne({ id: userId }, { $inc: { balance: amount } });
-    
-    res.json(response.data);
+    const user = await User.findOne({ id: userId });
+    res.json({ message: 'Deposit successful', balance: user.balance });
   } catch(err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/withdraw', async (req, res) => {
-  const { userId, amount } = req.body;
-  await User.updateOne({ id: userId }, { $inc: { balance: -amount } });
-  const tx = new Transaction({ userId, type: 'Withdraw', amount });
+app.post('/api/withdraw', authenticateToken, async (req, res) => {
+  const { amount } = req.body;
+  const userId = req.user.id;
+  await User.updateOne({ id: userId }, { $inc: { balance: -Number(amount) } });
+  const tx = new Transaction({ userId, type: 'Withdraw', amount: Number(amount) });
   await tx.save();
   res.json({ message: 'Withdrawal successful' });
 });
@@ -145,6 +154,5 @@ app.post('/create-recipient', async (req, res) => {
     name: name 
   });
 });
-
 
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));
