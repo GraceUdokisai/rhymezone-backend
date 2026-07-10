@@ -14,12 +14,12 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
-const JWT_SECRET = 'rhymezone_secret_key'; // you can change this
+const JWT_SECRET = 'rhymezone_secret_key';
 
 // MongoDB Connection
 mongoose.connect(MONGODB_URI)
- .then(() => console.log('MongoDB Connected'))
- .catch(err => console.log(err));
+.then(() => console.log('MongoDB Connected'))
+.catch(err => console.log(err));
 
 // MongoDB Schemas
 const UserSchema = new mongoose.Schema({
@@ -33,6 +33,7 @@ const TransactionSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   type: { type: String, required: true },
   amount: { type: Number, required: true },
+  reference: { type: String }, // ADDED THIS FOR PAYSTACK
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -53,7 +54,7 @@ function authenticateToken(req, res, next) {
 
 // TEST ROUTE
 app.get('/', (req, res) => {
-  res.json({ message: "My Game Backend is Live!" });
+  res.json({ message: "RhymeZone Backend is Live!" });
 });
 
 // RHYME ROUTES
@@ -114,29 +115,41 @@ app.get('/api/transactions/:userId', async (req, res) => {
   res.json(txs);
 });
 
+// FIXED DEPOSIT - NOW ACCEPTS REFERENCE FROM PAYSTACK
 app.post('/api/deposit', authenticateToken, async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount, reference } = req.body; // NOW GETS REFERENCE
     const userId = req.user.id;
     
     await User.updateOne({ id: userId }, { $inc: { balance: Number(amount) } });
-    const tx = new Transaction({ userId, type: 'Deposit', amount: Number(amount) });
+    const tx = new Transaction({ userId, type: 'Deposit', amount: Number(amount), reference }); // SAVES REFERENCE
     await tx.save();
     
     const user = await User.findOne({ id: userId });
-    res.json({ message: 'Deposit successful', balance: user.balance });
+    res.json({ message: `Deposited ₦${amount} successfully!`, balance: user.balance });
   } catch(err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// WITHDRAW - ADDED BALANCE CHECK
 app.post('/api/withdraw', authenticateToken, async (req, res) => {
-  const { amount } = req.body;
-  const userId = req.user.id;
-  await User.updateOne({ id: userId }, { $inc: { balance: -Number(amount) } });
-  const tx = new Transaction({ userId, type: 'Withdraw', amount: Number(amount) });
-  await tx.save();
-  res.json({ message: 'Withdrawal successful' });
+  try {
+    const { amount } = req.body;
+    const userId = req.user.id;
+    const user = await User.findOne({ id: userId });
+
+    if(user.balance < Number(amount)) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+
+    await User.updateOne({ id: userId }, { $inc: { balance: -Number(amount) } });
+    const tx = new Transaction({ userId, type: 'Withdraw', amount: Number(amount) });
+    await tx.save();
+    res.json({ message: 'Withdrawal successful' });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // CREATE RECIPIENT ROUTE
