@@ -33,8 +33,8 @@ const TransactionSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   type: { type: String, required: true },
   amount: { type: Number, required: true },
-  reference: { type: String }, // ADDED THIS FOR PAYSTACK
-  createdAt: { type: Date, default: Date.now }
+  reference: { type: String },
+  createdAt: { type: Date, default: Date.now } // We will format this to Date + Time
 });
 
 const User = mongoose.model('User', UserSchema);
@@ -112,23 +112,53 @@ app.get('/api/user/:userId', async (req, res) => {
 
 app.get('/api/transactions/:userId', async (req, res) => {
   const txs = await Transaction.find({ userId: req.params.userId }).sort({ createdAt: -1 });
-  res.json(txs);
+  
+  // FORMAT DATE + TIME BEFORE SENDING TO FRONTEND
+  const formattedTxs = txs.map(tx => {
+    const date = new Date(tx.createdAt);
+    const formattedDate = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    return {
+      type: tx.type,
+      amount: tx.amount,
+      date: formattedDate // e.g. "7/10/2026 2:54 PM"
+    }
+  });
+  
+  res.json(formattedTxs);
 });
 
-// FIXED DEPOSIT - NOW ACCEPTS REFERENCE FROM PAYSTACK
-app.post('/api/deposit', authenticateToken, async (req, res) => {
+
+// NEW: VERIFY PAYMENT ROUTE - THIS IS THE IMPORTANT ONE
+app.post('/api/verify-payment', authenticateToken, async (req, res) => {
   try {
-    const { amount, reference } = req.body; // NOW GETS REFERENCE
+    const { reference } = req.body;
     const userId = req.user.id;
-    
-    await User.updateOne({ id: userId }, { $inc: { balance: Number(amount) } });
-    const tx = new Transaction({ userId, type: 'Deposit', amount: Number(amount), reference }); // SAVES REFERENCE
-    await tx.save();
-    
-    const user = await User.findOne({ id: userId });
-    res.json({ message: `Deposited ₦${amount} successfully!`, balance: user.balance });
+
+    // 1. VERIFY WITH PAYSTACK
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
+    });
+
+    const paymentData = response.data;
+
+    // 2. ONLY CREDIT IF SUCCESS
+    if (paymentData.status === 'success') {
+      const amount = paymentData.amount / 100; // Paystack sends kobo
+
+      // Credit user
+      await User.updateOne({ id: userId }, { $inc: { balance: Number(amount) } });
+      
+      // Save transaction - Date + Time will be auto saved by createdAt
+      const tx = new Transaction({ userId, type: 'Deposit', amount: Number(amount), reference });
+      await tx.save();
+      
+      const user = await User.findOne({ id: userId });
+      res.json({ success: true, message: `Deposited ₦${amount} successfully!`, balance: user.balance });
+    } else {
+      res.json({ success: false, message: 'Payment not successful' });
+    }
   } catch(err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Verification failed: ' + err.message });
   }
 });
 
