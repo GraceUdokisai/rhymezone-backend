@@ -12,6 +12,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
+const PAYSTACK_PUBLIC = process.env.PAYSTACK_PUBLIC_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 // MongoDB Connection
@@ -36,6 +37,11 @@ const TransactionSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', UserSchema);
 const Transaction = mongoose.model('Transaction', TransactionSchema);
+
+// CONFIG ROUTE - for frontend to get public key
+app.get('/api/config', (req, res) => {
+  res.json({ paystackPublicKey: PAYSTACK_PUBLIC });
+});
 
 // RHYME ROUTES
 app.get('/rhyme', async (req, res) => {
@@ -85,17 +91,59 @@ app.get('/api/transactions/:userId', async (req, res) => {
   res.json(txs);
 });
 
-app.post('/deposit', async (req, res) => {
+// DEPOSIT - Initialize payment
+app.post('/api/deposit', async (req, res) => {
   const { email, amount, userId } = req.body;
-  const response = await axios.post('https://api.paystack.co/transaction/initialize',
-    { email, amount: amount * 100, metadata: { userId } },
-    { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } } // <-- FIXED HERE
-  );
-  res.json(response.data);
+  try {
+    const response = await axios.post('https://api.paystack.co/transaction/initialize',
+      { 
+        email, 
+        amount: amount * 100, // to kobo
+        metadata: { userId } 
+      },
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+    );
+    res.json({ url: response.data.data.authorization_url, reference: response.data.data.reference });
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data?.message || 'Payment error' });
+  }
 });
 
+// VERIFY - Confirm payment and add balance
+app.get('/api/verify/:reference', async (req, res) => {
+  try {
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${req.params.reference}`,
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+    );
+
+    const data = response.data;
+    if(data.status === 'success'){
+      const userId = data.metadata.userId;
+      const amount = data.amount / 100; // back to naira
+
+      // Add balance to user
+      await User.updateOne({ id: userId }, { $inc: { balance: amount } });
+      
+      // Save transaction
+      const tx = new Transaction({ userId, type: 'Deposit', amount });
+      await tx.save();
+
+      res.json({ success: true, amount, message: 'Deposit successful' });
+    } else {
+      res.json({ success: false, message: 'Payment not successful' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// WITHDRAW
 app.post('/api/withdraw', async (req, res) => {
   const { userId, amount } = req.body;
+  const user = await User.findOne({ id: userId });
+  if(!user) return res.json({ error: 'User not found' });
+  if(user.balance < amount) return res.json({ error: 'Insufficient balance' });
+
   await User.updateOne({ id: userId }, { $inc: { balance: -amount } });
   const tx = new Transaction({ userId, type: 'Withdraw', amount });
   await tx.save();
