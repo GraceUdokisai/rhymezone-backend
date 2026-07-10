@@ -34,7 +34,7 @@ const TransactionSchema = new mongoose.Schema({
   type: { type: String, required: true },
   amount: { type: Number, required: true },
   reference: { type: String },
-  createdAt: { type: Date, default: Date.now } // We will format this to Date + Time
+  createdAt: { type: Date, default: Date.now }
 });
 
 const User = mongoose.model('User', UserSchema);
@@ -44,7 +44,7 @@ const Transaction = mongoose.model('Transaction', TransactionSchema);
 function authenticateToken(req, res, next) {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'No token' });
-  
+
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ error: 'Invalid token' });
     req.user = user;
@@ -112,46 +112,39 @@ app.get('/api/user/:userId', async (req, res) => {
 
 app.get('/api/transactions/:userId', async (req, res) => {
   const txs = await Transaction.find({ userId: req.params.userId }).sort({ createdAt: -1 });
-  
-  // FORMAT DATE + TIME BEFORE SENDING TO FRONTEND
+
   const formattedTxs = txs.map(tx => {
     const date = new Date(tx.createdAt);
     const formattedDate = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     return {
       type: tx.type,
       amount: tx.amount,
-      date: formattedDate // e.g. "7/10/2026 2:54 PM"
+      date: formattedDate
     }
   });
-  
+
   res.json(formattedTxs);
 });
 
-
-// NEW: VERIFY PAYMENT ROUTE - THIS IS THE IMPORTANT ONE
+// VERIFY PAYMENT ROUTE
 app.post('/api/verify-payment', authenticateToken, async (req, res) => {
   try {
     const { reference } = req.body;
     const userId = req.user.id;
 
-    // 1. VERIFY WITH PAYSTACK
     const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
     });
 
     const paymentData = response.data;
 
-    // 2. ONLY CREDIT IF SUCCESS
     if (paymentData.status === 'success') {
-      const amount = paymentData.amount / 100; // Paystack sends kobo
+      const amount = paymentData.amount / 100;
 
-      // Credit user
       await User.updateOne({ id: userId }, { $inc: { balance: Number(amount) } });
-      
-      // Save transaction - Date + Time will be auto saved by createdAt
       const tx = new Transaction({ userId, type: 'Deposit', amount: Number(amount), reference });
       await tx.save();
-      
+
       const user = await User.findOne({ id: userId });
       res.json({ success: true, message: `Deposited ₦${amount} successfully!`, balance: user.balance });
     } else {
@@ -162,7 +155,7 @@ app.post('/api/verify-payment', authenticateToken, async (req, res) => {
   }
 });
 
-// WITHDRAW - ADDED BALANCE CHECK
+// OLD WITHDRAW - KEEP FOR TESTING
 app.post('/api/withdraw', authenticateToken, async (req, res) => {
   try {
     const { amount } = req.body;
@@ -182,19 +175,79 @@ app.post('/api/withdraw', authenticateToken, async (req, res) => {
   }
 });
 
-// CREATE RECIPIENT ROUTE
+// NEW 1: GET BANK LIST
+app.get('/api/banks', async (req, res) => {
+  try {
+    const response = await axios.get('https://api.paystack.co/bank', {
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
+    });
+    res.json(response.data);
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// NEW 2: AUTO WITHDRAW TO BANK
+app.post('/api/withdraw-bank', authenticateToken, async (req, res) => {
+  try {
+    const { amount, accountNumber, bankCode } = req.body;
+    const userId = req.user.id;
+    const user = await User.findOne({ id: userId });
+
+    if(user.balance < Number(amount)) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+    if(Number(amount) < 100) {
+      return res.status(400).json({ error: 'Minimum withdrawal is ₦100' });
+    }
+
+    // 1. CREATE RECIPIENT
+    const recipientRes = await axios.post('https://api.paystack.co/transferrecipient', {
+      type: "nuban",
+      name: user.email,
+      account_number: accountNumber,
+      bank_code: bankCode,
+      currency: "NGN"
+    }, { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } });
+
+    const recipientCode = recipientRes.data.data.recipient_code;
+
+    // 2. INITIATE TRANSFER
+    const transferRes = await axios.post('https://api.paystack.co/transfer', {
+      source: "balance",
+      amount: Number(amount) * 100,
+      recipient: recipientCode,
+      reason: "RhymeZone Withdrawal"
+    }, { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } });
+
+    // 3. DEDUCT BALANCE ONLY IF TRANSFER SUCCESS
+    if(transferRes.data.status === true) {
+      await User.updateOne({ id: userId }, { $inc: { balance: -Number(amount) } });
+      const tx = new Transaction({ userId, type: 'Withdraw', amount: Number(amount) });
+      await tx.save();
+      res.json({ message: `₦${amount} sent to your bank! It will arrive in 10 minutes.` });
+    } else {
+      res.json({ error: 'Transfer failed: ' + transferRes.data.message });
+    }
+
+  } catch(err) {
+    res.status(500).json({ error: 'Withdrawal failed: ' + err.message });
+  }
+});
+
+// CREATE RECIPIENT ROUTE - OLD
 app.post('/create-recipient', async (req, res) => {
   const { name } = req.body;
   console.log("Received name:", name);
-  
+
   if (!name) {
     return res.status(400).json({ success: false, message: "Name is required" });
   }
-  
-  res.json({ 
-    success: true, 
-    message: "Recipient created!", 
-    name: name 
+
+  res.json({
+    success: true,
+    message: "Recipient created!",
+    name: name
   });
 });
 
