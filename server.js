@@ -126,7 +126,7 @@ app.get('/api/transactions/:userId', async (req, res) => {
   res.json(formattedTxs);
 });
 
-// VERIFY PAYMENT ROUTE
+// FIXED: VERIFY PAYMENT ROUTE
 app.post('/api/verify-payment', authenticateToken, async (req, res) => {
   try {
     const { reference } = req.body;
@@ -136,12 +136,15 @@ app.post('/api/verify-payment', authenticateToken, async (req, res) => {
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }
     });
 
-    const paymentData = response.data;
+    const paymentData = response.data.data; // FIX 1: Paystack puts data inside data
 
-    if (paymentData.status === 'success') {
-      const amount = paymentData.amount / 100;
+    if (paymentData.status === 'success') { // FIX 2: Now this will work
+      const amount = paymentData.amount / 100; // kobo to naira
 
+      // 1. Add to balance
       await User.updateOne({ id: userId }, { $inc: { balance: Number(amount) } });
+
+      // 2. Save transaction
       const tx = new Transaction({ userId, type: 'Deposit', amount: Number(amount), reference });
       await tx.save();
 
@@ -151,6 +154,7 @@ app.post('/api/verify-payment', authenticateToken, async (req, res) => {
       res.json({ success: false, message: 'Payment not successful' });
     }
   } catch(err) {
+    console.log(err);
     res.status(500).json({ error: 'Verification failed: ' + err.message });
   }
 });
